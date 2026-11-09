@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Baustellen</title>
+<meta name="theme-color" content="#ffffff">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Baustellen">
+<style>
+:root{--ink:#1c2433;--mut:#6a7487;--line:#e6e9ee;--bg:#f6f7f9}
+*{box-sizing:border-box}
+body{margin:0;font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
+.box{background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px;max-width:440px;width:100%}
+.lg{display:flex;align-items:center;gap:12px;margin-bottom:14px}.lg img{width:44px;height:44px;border-radius:10px}
+h1{font-size:19px;margin:0}.s{font-size:13.5px;color:var(--mut);line-height:1.45}
+label{display:block;font-size:12.5px;color:var(--mut);margin:12px 0 4px}
+input{width:100%;padding:11px;border:1px solid #d3dae6;border-radius:9px;font:inherit}
+button{background:var(--ink);color:#fff;border:0;border-radius:9px;padding:11px 15px;font:inherit;font-weight:550;margin-top:10px;cursor:pointer}
+button.sec{background:#eef1f5;color:var(--ink)}
+.err{background:#fdecea;border:1px solid #f1b6ae;border-radius:10px;padding:10px;font-size:13.5px;margin-top:12px}
+.spin{width:28px;height:28px;border:3px solid var(--line);border-top-color:var(--ink);border-radius:50%;animation:r 1s linear infinite;margin:6px auto}
+@keyframes r{to{transform:rotate(360deg)}}
+a{color:var(--ink)}
+</style>
+</head>
+<body>
+<div class="box" id="ui"><div class="spin"></div><div class="s" style="text-align:center">Baustellen-App wird geladen …</div></div>
+<script>
+(()=>{
+/* Startseite der Baustellen-App: lädt bei jedem Start die neueste baustelle.html aus Dropbox/Apps/KiB App
+   und startet sie. Ohne Netz startet die zuletzt geladene Version. Die Dropbox-Anmeldung teilt sie mit der App. */
+const APP_PATH='/baustelle.html';
+const ls=k=>{try{return localStorage.getItem('bs_'+k)||''}catch(e){return ''}};
+const lsw=(k,v)=>{try{localStorage.setItem('bs_'+k,v)}catch(e){}};
+const ui=document.getElementById('ui');
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function db(){return new Promise((res,rej)=>{const r=indexedDB.open('kibloader',1);r.onupgradeneeded=()=>r.result.createObjectStore('a');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+async function cacheGet(){try{const d=await db();return await new Promise(res=>{const q=d.transaction('a').objectStore('a').get('app');q.onsuccess=()=>res(q.result||null);q.onerror=()=>res(null)})}catch(e){return null}}
+async function cachePut(o){try{const d=await db();await new Promise(res=>{const t=d.transaction('a','readwrite');t.objectStore('a').put(o,'app');t.oncomplete=res;t.onerror=res})}catch(e){}}
+const tmo=(p,ms)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error('Zeitüberschreitung')),ms))]);
+async function token(){
+ const r=await fetch('https://api.dropboxapi.com/oauth2/token',{method:'POST',body:new URLSearchParams({grant_type:'refresh_token',refresh_token:ls('dbxRt'),client_id:ls('dbxKey')})});
+ if(r.status===400||r.status===401){const e=new Error('Dropbox-Anmeldung ungültig');e.auth=1;throw e}
+ if(!r.ok)throw new Error('Dropbox nicht erreichbar ('+r.status+')');
+ return (await r.json()).access_token;
+}
+async function fetchApp(cached){
+ const tk=await token();
+ const m=await fetch('https://api.dropboxapi.com/2/files/get_metadata',{method:'POST',headers:{Authorization:'Bearer '+tk,'Content-Type':'application/json'},body:JSON.stringify({path:APP_PATH})});
+ if(m.status===409){const e=new Error('missing');e.missing=1;throw e}
+ if(!m.ok)throw new Error('Dropbox-Fehler '+m.status);
+ const meta=await m.json();
+ if(cached&&cached.rev===meta.rev)return cached;
+ const u='https://content.dropboxapi.com/2/files/download?'+new URLSearchParams({authorization:'Bearer '+tk,arg:JSON.stringify({path:APP_PATH})});
+ const r=await fetch(u,{method:'POST',headers:{'Content-Type':'text/plain; charset=dropbox-cors-hack'}});
+ if(!r.ok)throw new Error('Download fehlgeschlagen ('+r.status+')');
+ const html=await r.text();
+ if(!/<html/i.test(html))throw new Error('Die Datei baustelle.html ist ungültig');
+ const o={rev:meta.rev,html,ts:Date.now(),mod:meta.server_modified};await cachePut(o);return o;
+}
+function boot(o){
+ window.__kibLoader={rev:o.rev,ts:o.ts,mod:o.mod};
+ document.open();document.write(o.html.replace(/<head([^>]*)>/i,'<head$1><script>window.__kibLoader='+JSON.stringify({rev:o.rev,mod:o.mod})+'<\/script>'));document.close();
+}
+async function start(){
+ const cached=await cacheGet();
+ if(!ls('dbxRt')||!ls('dbxKey'))return cached?boot(cached):setup();
+ try{const o=await tmo(fetchApp(cached),cached?8000:60000);boot(o)}
+ catch(e){
+  if(cached&&!e.auth&&!e.missing)return boot(cached);
+  if(e.auth)return setup('Die Dropbox-Anmeldung ist abgelaufen. Bitte neu anmelden.');
+  if(e.missing)return show(`<h1>App-Datei fehlt</h1><div class="s" style="margin-top:8px">In deiner Dropbox liegt noch keine <b>baustelle.html</b> im Ordner <b>Apps/KiB App</b>. Bitte die aktuelle baustelle.html dorthin kopieren und dann erneut starten.</div><button onclick="location.reload()">Erneut versuchen</button>`+(cached?'<button class="sec" onclick="startCached()">Letzte Version starten</button>':''));
+  show(`<h1>Keine Verbindung</h1><div class="err">${esc(e.message||e)}</div><button onclick="location.reload()">Erneut versuchen</button>`);
+ }
+}
+async function startCached(){const c=await cacheGet();if(c)boot(c)}
+function show(h){ui.innerHTML=`<div class="lg"><img src="icon-192.png" alt=""><div><b>Baustellen</b><div class="s">Kirchliches Bauen · Diözese Innsbruck</div></div></div>`+h}
+const b64u=a=>btoa(String.fromCharCode(...a)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+function setup(msg){
+ show(`${msg?'<div class="err" style="margin-top:0;margin-bottom:10px">'+esc(msg)+'</div>':''}<h1>Mit Dropbox verbinden</h1>
+ <div class="s" style="margin-top:6px">Einmalig je Gerät. Danach startet die App immer mit der neuesten Version aus Dropbox/Apps/KiB App und gleicht alle Daten ab.</div>
+ <label>App-Schlüssel (App key)</label><input id="k" value="${esc(ls('dbxKey'))}" autocomplete="off">
+ <button onclick="login()">1. Bei Dropbox anmelden</button><div id="lk" class="s"></div>
+ <label>2. Code von Dropbox einfügen</label><input id="c" autocomplete="off">
+ <button onclick="code()">3. Verbinden</button><div id="m"></div>`);
+}
+async function login(){
+ const key=document.getElementById('k').value.trim();if(!key)return alert('Bitte den App-Schlüssel eintragen.');
+ let w=null;try{w=window.open('','_blank')}catch(e){}
+ lsw('dbxKey',key);
+ let ver=ls('dbxVer');if(!ver||Date.now()-Number(ls('dbxVerT')||0)>1200000){const a=new Uint8Array(48);crypto.getRandomValues(a);ver=b64u(a);lsw('dbxVer',ver);lsw('dbxVerT',String(Date.now()))}
+ const ch=b64u(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(ver))));
+ const url='https://www.dropbox.com/oauth2/authorize?'+new URLSearchParams({client_id:key,response_type:'code',code_challenge:ch,code_challenge_method:'S256',token_access_type:'offline'});
+ if(w)try{w.location.href=url}catch(e){w=null}
+ document.getElementById('lk').innerHTML='Falls sich kein Fenster geöffnet hat: <a href="'+esc(url)+'" target="_blank">Dropbox-Anmeldung öffnen</a>';
+}
+async function code(){
+ const c=document.getElementById('c').value.replace(/\s+/g,'');if(!c)return alert('Bitte den Code einfügen.');
+ const m=document.getElementById('m');m.innerHTML='<div class="spin"></div>';
+ try{const r=await fetch('https://api.dropboxapi.com/oauth2/token',{method:'POST',body:new URLSearchParams({grant_type:'authorization_code',code:c,code_verifier:ls('dbxVer'),client_id:ls('dbxKey')})});
+  const j=await r.json().catch(()=>({}));if(!r.ok||!j.refresh_token)throw new Error(j.error_description||j.error||('Fehler '+r.status));
+  lsw('dbxRt',j.refresh_token);lsw('dbxVerT','0');location.reload();
+ }catch(e){m.innerHTML='<div class="err">Anmeldung hat nicht geklappt: '+esc(e.message)+'<br>Der Code gilt nur einmal und wenige Minuten – bitte erneut „Bei Dropbox anmelden“.</div>'}
+}
+window.login=login;window.code=code;window.startCached=startCached;
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+start();
+})();
+</script>
+</body>
+</html>
