@@ -64,9 +64,11 @@ async function downloadApp(tk,meta){
  if(!/<html/i.test(html))throw new Error('Die Datei baustelle.html ist ungültig');
  const o={rev:meta.rev,html,ts:Date.now(),mod:meta.server_modified};await cachePut(o);return o;
 }
+const fmtMod=m=>{try{return new Date(m).toLocaleString('de-AT',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}catch(e){return m||'?'}};
 function boot(o){
  window.__kibLoader={rev:o.rev,ts:o.ts,mod:o.mod};
  document.open();document.write(o.html.replace(/<head([^>]*)>/i,'<head$1><script>window.__kibLoader='+JSON.stringify({rev:o.rev,mod:o.mod})+'<\/script>'));document.close();
+ try{const b=document.createElement('div');b.textContent='App-Version vom '+fmtMod(o.mod);b.style.cssText='position:fixed;left:50%;bottom:14px;transform:translateX(-50%);background:#1c2433;color:#fff;font:13px system-ui,sans-serif;padding:7px 12px;border-radius:20px;z-index:99999;opacity:.92;pointer-events:none;transition:opacity .6s';(document.body||document.documentElement).appendChild(b);setTimeout(()=>{b.style.opacity='0'},4000);setTimeout(()=>b.remove(),5000)}catch(e){}
 }
 async function start(){
  const cached=await cacheGet();
@@ -78,7 +80,11 @@ async function start(){
  /* Neue Version vorhanden: Download NICHT abbrechen (2,6 MB brauchen am Handy oft länger als ein paar Sekunden) */
  ui.querySelector('.s')&&(ui.querySelector('.s').textContent='Neue Version der App wird geladen …');
  try{boot(await tmo(downloadApp(chk.tk,chk.meta),180000))}
- catch(e){if(cached&&!e.auth)return boot(cached);fail(e,cached)}
+ catch(e){
+  if(e.auth)return fail(e,cached);
+  /* nicht mehr still die alte Version starten – sonst merkt man nie, dass das Update hängt */
+  return show(`<h1>Neue Version konnte nicht geladen werden</h1><div class="err">${esc(e.message||e)}</div><button onclick="location.reload()">Erneut versuchen</button>`+(cached?`<button class="sec" onclick="startCached()">Alte Version starten (vom ${esc(fmtMod(cached.mod))})</button>`:''));
+ }
 }
 function fail(e,cached){
   if(e.auth)return setup('Die Dropbox-Anmeldung ist abgelaufen. Bitte neu anmelden.');
